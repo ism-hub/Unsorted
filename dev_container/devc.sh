@@ -1,11 +1,13 @@
 #! /bin/bash
 
 # snapshot branch
-BRANCHES_ROOT_FOLDER="./branches"
+BRANCHES_ROOT_FOLDER=~/projs/Unsorted/dev_container/branches
 # containers we won't shutdown and rename
 declare -A IGNORED_CONTAINERS=([cnvim]=1 [deluge]=1 [plex]=1 [radarr]=1 [sonarr]=1 [jackett]=1 [nclient-nclient-1]=1 [backup_manager-backup_manager-1]=1)
 # folders we will move to the branch folder
-declare -a FOLDERS_TO_COPY=("/home/ism/projs/dev_container/vol_of_web" "/home/ism/projs/dev_container/vol_of_web2")
+declare -a FOLDERS_TO_COPY=("/home/ism/projs/Unsorted/dev_container/vol_of_web" "/home/ism/projs/Unsorted/dev_container/vol_of_web2")
+# compose path
+COMPOSE_COMMAND_PATH=~/servers/media_server/docker-compose.yml
 
 while test $# -gt 0
 do
@@ -16,6 +18,8 @@ do
             ;;
         --move-files) MOVE_FILES=true
             ;;
+        --del-backup-files) DEL_BACKUP_FILES=true
+            ;;
         --restore-files-from) RESTORE_FILES_FROM=true
             ;;
         --stop-save) STOP_AND_SAVE=true
@@ -25,6 +29,12 @@ do
         --restore) RESTORE=true
             ;;
         --restore-from) RESTORE_FROM=true
+            ;;
+        --del-images) DEL_IMAGES=true
+            ;;
+        --get-saved-services) GET_SAVED_SERVICES=true
+            ;;
+        --get-unsaved-services) GET_UNSAVED_SERVICES=true
             ;;
         --*) echo "bad option $1" && exit 1
             ;;
@@ -186,36 +196,96 @@ restore_folders_from_branch_folder () {
     rsync -rv --relative "${branch_folder_path}/./" /
 }
 
+get_branch_saved_images_services () {
+    if [ -z $1 ] ; then
+        local selected_branch_folder=$(select_branch_folder)
+    else
+        local selected_branch_folder=$1
+    fi
+    while read -r image 
+    do
+        # find the corresponding setvice of the image
+        local service=$(docker compose -f ${COMPOSE_COMMAND_PATH} config --format json | jq -r '.services | to_entries[] | "\(.key),\(.value.image)"' | grep ${image} | head -1 | awk -F ',' '{print $1}')
+        local services+=(${service})
+    done <<EOD
+$(docker images --format '{{ .Repository }},{{ .Tag }}' | grep ${selected_branch_folder} | awk -F ',' '{print $1}')
+EOD
+    echo ${services[@]}
+}
+
+get_not_saved_services () {
+    local saved_services=( $(get_branch_saved_images_services $(get_folder_name_from_branch)) )
+    local all_services=( $(docker compose -f ${COMPOSE_COMMAND_PATH} config --format json | jq -r '.services | to_entries[] | .key' | tr '\n' ' ') )
+    local diff=( $(echo ${all_services[@]} ${saved_services[@]} | tr ' ' '\n' | sort | uniq -u | tr '\n' ' ' ) )
+    echo ${diff[@]}
+}
+
+del_branch_images () {
+    if [ -z $1 ] ; then
+        local selected_branch_folder=$(select_branch_folder)
+    else
+        local selected_branch_folder=$1
+    fi
+
+    while IFS="," read -r repo tag
+    do
+        docker rmi ${repo}:${tag}
+    done <<EOD
+$(docker images --format '{{ .Repository }},{{ .Tag }}' | grep ${selected_branch_folder})
+EOD
+}
+
+del_branch_folder () {
+    if [ -z $1 ] ; then
+        local selected_branch_folder=$(select_branch_folder)
+    else
+        local selected_branch_folder=$1
+    fi
+
+    local branch_folder_path="${BRANCHES_ROOT_FOLDER}/${selected_branch_folder}"
+    echo "rm -rf -I ${branch_folder_path}/*"
+    rm -rf -I ${branch_folder_path}/*
+}
+
 main () {
     if [ $COPY_FILES ]; then
+        del_branch_folder $(get_folder_name_from_branch)
         copy_folders_to_branch_folder
     fi
 
     if [ $RESTORE_FILES ]; then
+        delete_content_of_folders_to_copy
         restore_folders_from_branch_folder $(get_branch_folder_path)
     fi
 
     if [ $MOVE_FILES ]; then
+        del_branch_folder $(get_folder_name_from_branch)
         copy_folders_to_branch_folder
         delete_content_of_folders_to_copy
     fi
 
     if [ $RESTORE_FILES_FROM ]; then
+        delete_content_of_folders_to_copy
         restore_folders_from_branch_folder
     fi
 
     if [ $STOP_AND_SAVE ]; then
+        del_branch_images $(get_folder_name_from_branch)
         stop_and_save_containers
+        del_branch_folder $(get_folder_name_from_branch)
         copy_folders_to_branch_folder
     fi
 
     if [ $STOP_SAVE_DELETE ]; then
+        del_branch_images $(get_folder_name_from_branch)
         stop_and_save_containers
+        del_branch_folder $(get_folder_name_from_branch)
         copy_folders_to_branch_folder
         delete_content_of_folders_to_copy
     fi
 
     if [ $RESTORE ]; then
+        delete_content_of_folders_to_copy
         restore_folders_from_branch_folder $(get_branch_folder_path)
         # rename_and_start_containers_of_branch $(get_folder_name_from_branch)
         restore_image_tags
@@ -224,9 +294,26 @@ main () {
     if [ $RESTORE_FROM ]; then
         local branch_folder=$(select_branch_folder)
         local branch_folder_path="${BRANCHES_ROOT_FOLDER}/${branch_folder}"
+        delete_content_of_folders_to_copy
         restore_folders_from_branch_folder $branch_folder_path
         # rename_and_start_containers_of_branch $branch_folder
         restore_image_tags ${branch_folder}
+    fi
+
+    if [ $GET_SAVED_SERVICES ]; then
+        get_branch_saved_images_services $(get_folder_name_from_branch)
+    fi
+
+    if [ $GET_UNSAVED_SERVICES ]; then
+        get_not_saved_services
+    fi
+
+    if [ $DEL_IMAGES ]; then
+        del_branch_images $(get_folder_name_from_branch)
+    fi
+
+    if [ $DEL_BACKUP_FILES ]; then
+        del_branch_folder $(get_folder_name_from_branch)
     fi
 }
 
