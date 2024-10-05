@@ -1,0 +1,14 @@
+[Unit]
+Description=VPN over SSH
+After=network.target
+
+[Service]
+Type=exec
+ExecStart=/bin/bash /usr/bin/ssh_vpn.sh
+User=ism
+Group=ism
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
